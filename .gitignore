@@ -169,3 +169,19 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+/Fights_logs/
+/test_1_attack/
+/test_2_defence/
+/test_3_counterattack/
+/add.py
+/main_oop.py
+/Martial_Arts_Brutality_bot.bat
+/вывод интерп и скорости.xlsx
+/Сохр атаку с кровью в глазах.txt
+/.idea/Martial_Arts_Brutality_bot.iml
+/.idea/vcs.xml
+/.idea/misc.xml
+/.idea/modules.xml
+/.idea/inspectionProfiles/Project_Default.xml
+/.idea/inspectionProfiles/profiles_settings.xml
+/.idea/.gitignore
