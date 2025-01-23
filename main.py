@@ -7,18 +7,147 @@ import keyboard
 import cv2
 import cv2_ext
 from numba import njit
+import pygetwindow as gw
+import ctypes
+from ctypes import wintypes
+
+# Определяем константы Windows API
+HWND = wintypes.HWND
+HDC = wintypes.HDC
+HBITMAP = wintypes.HANDLE
+SRCCOPY = 0x00CC0020
+DIB_RGB_COLORS = 0
+BI_RGB = 0
+UINT = wintypes.UINT
+LPCWSTR = wintypes.LPWSTR
+LPVOID = wintypes.LPVOID
+
+class BITMAPINFOHEADER(ctypes.Structure):
+    _fields_ = [
+        ("biSize", wintypes.DWORD),
+        ("biWidth", wintypes.LONG),
+        ("biHeight", wintypes.LONG),
+        ("biPlanes", wintypes.WORD),
+        ("biBitCount", wintypes.WORD),
+        ("biCompression", wintypes.DWORD),
+        ("biSizeImage", wintypes.DWORD),
+        ("biXPelsPerMeter", wintypes.LONG),
+        ("biYPelsPerMeter", wintypes.LONG),
+        ("biClrUsed", wintypes.DWORD),
+        ("biClrImportant", wintypes.DWORD),
+    ]
+
+# Определяем структуру RGBTRIPLE
+class RGBTRIPLE(ctypes.Structure):
+    _fields_ = [
+        ("rgbtBlue", ctypes.c_ubyte),
+        ("rgbtGreen", ctypes.c_ubyte),
+        ("rgbtRed", ctypes.c_ubyte),
+    ]
+
+class BITMAPINFO(ctypes.Structure):
+    _fields_ = [
+        ("bmiHeader", BITMAPINFOHEADER),
+        ("bmiColors", RGBTRIPLE * 1)  # Используем нашу структуру RGBTRIPLE
+    ]
+
+# Загружаем необходимые DLL
+gdi32 = ctypes.windll.gdi32
+user32 = ctypes.windll.user32
+kernel32 = ctypes.windll.kernel32
+
+#  функции Windows API
+GetWindowDC = user32.GetWindowDC
+ReleaseDC = user32.ReleaseDC
+CreateCompatibleDC = gdi32.CreateCompatibleDC
+CreateCompatibleBitmap = gdi32.CreateCompatibleBitmap
+SelectObject = gdi32.SelectObject
+BitBlt = gdi32.BitBlt
+GetDIBits = gdi32.GetDIBits
+DeleteObject = gdi32.DeleteObject
+GetDeviceCaps = gdi32.GetDeviceCaps
+
+
+def screenshot_to_numpy():
+    """
+    Делает скриншот окна и возвращает numpy array.
+
+    :return numpy.ndarray: numpy array с изображением в формате RGB (height, width, 3) или None в случае ошибки.
+    """
+    # window_name = "название_окна"
+    # hwnd = gw.getWindowsWithTitle(window_name)[0]._hWnd  # Получаем HWND окна по имени
+    hwnd = None  # получить скриншот по названию окна или None - всего экрана
+
+    try:
+        if hwnd is None:
+            hwnd = user32.GetDesktopWindow()
+
+        # Получаем дескриптор контекста устройства (HDC)
+        hdc = GetWindowDC(hwnd)
+
+        # Получаем размеры окна
+        rect = wintypes.RECT()
+        user32.GetWindowRect(hwnd, ctypes.byref(rect))
+        width = rect.right - rect.left
+        height = rect.bottom - rect.top
+
+        # Создаем совместимый DC
+        memdc = CreateCompatibleDC(hdc)
+
+        # Создаем совместимую растровую карту
+        bitmap = CreateCompatibleBitmap(hdc, width, height)
+
+        # Выбираем растровую карту в DC
+        SelectObject(memdc, bitmap)
+
+        # Копируем содержимое окна в совместимый DC
+        BitBlt(memdc, 0, 0, width, height, hdc, 0, 0, SRCCOPY)
+
+        # Создаем структуру BITMAPINFO
+        bmi = BITMAPINFO()
+        bmi.bmiHeader.biSize = ctypes.sizeof(BITMAPINFOHEADER)
+        bmi.bmiHeader.biWidth = width
+        bmi.bmiHeader.biHeight = -height
+        bmi.bmiHeader.biPlanes = 1
+        bmi.bmiHeader.biBitCount = 24
+        bmi.bmiHeader.biCompression = BI_RGB
+
+        # Выделяем память под пиксели
+        buffer_size = width * height * 3
+        buffer = (ctypes.c_ubyte * buffer_size)()
+
+        # Получаем биты растровой карты
+        GetDIBits(memdc, bitmap, 0, height, buffer, ctypes.byref(bmi), DIB_RGB_COLORS)
+
+        # Конвертируем в numpy array
+        image_array = np.frombuffer(buffer, dtype=np.uint8).reshape((height, width, 3))
+
+        # Конвертируем BGR в RGB
+        # image_array = image_array[:, :, ::-1]
+
+        # Освобождаем ресурсы
+        DeleteObject(bitmap)
+        DeleteObject(memdc)
+        ReleaseDC(hwnd, hdc)
+
+        return image_array
+    except Exception as e:
+        print(f"Произошла ошибка: {e}")
+        return None
+
+
 pyautogui.PAUSE = 0.003
 pyautogui.MINIMUM_DURATION = 0.009
 
-limit_start_rad =  (    55,    130)
-limit_start_area = (13_000, 50_000)
-limit_arrow_area = (   300,  5_000)
-limit_length_beetw_points = (11, 550)
-block_height = 150
-block_cor_coef = 1.22  # для диагональных блоков контрудар будет справа
-dir_save = 'Fights_logs\\'
+LIMIT_START_RAD =  (    55,    130)
+LIMIT_START_AREA = (13_000, 50_000)
+LIMIT_ARROW_AREA = (   300,  5_000)
+LIMIT_LENGTH_BEETW_POINTS = (11, 550)
+BLOCK_HEIGHT = 150
+BLOCK_CORR_COEFF = 1.22  # для диагональных блоков контрудар будет справа
+DIR_SAVE = 'C:\\Users\\Nikolay\\Documents\\Python Files\\Martial_Arts_Brutality_bot\\Fights_logs\\'
 
-params = {
+PARAMS = {
     'attack' : {
         'phrase': 'Беру удар на себя.',
         'limits_window' : {'x': (700, 1820),
@@ -37,12 +166,13 @@ params = {
 @njit
 def calculate_distances(last_pos, arrow_pos):
     return np.sqrt(np.sum((arrow_pos - last_pos) ** 2, axis=1))
-
+# при первом запуске долго выполняется из-за numpy warnings возникающих при импорте в PyCharm
+calculate_distances(np.array([819, 738]), np.array([[999,999],[888,888],[777,777],[666,666]]))
 
 class Fight_master:
     def __init__(self, stage):
+        print(PARAMS[stage]['phrase'], end='\t')
         self.stage = stage
-        print(params[stage]['phrase'], end='\t')
         self.dt_start = time.time()
         self.error = None
         self.dt_end_str = time.strftime("%Y_%m_%d %H.%M.%S", time.localtime())
@@ -62,11 +192,10 @@ class Fight_master:
             self.def_point_half = None
             self.def_follow_points = []
 
-        self.screen = cv2.cvtColor(np.array(pyautogui.screenshot()), cv2.COLOR_RGB2BGR)
-        self.screen_orig = self.screen.copy()
+        self.screen = screenshot_to_numpy()
         self.cropped_image = self.screen[
-                             params[self.stage]['limits_window']['y'][0]:params[self.stage]['limits_window']['y'][1],
-                             params[self.stage]['limits_window']['x'][0]:params[self.stage]['limits_window']['x'][1]]
+                             PARAMS[self.stage]['limits_window']['y'][0]:PARAMS[self.stage]['limits_window']['y'][1],
+                             PARAMS[self.stage]['limits_window']['x'][0]:PARAMS[self.stage]['limits_window']['x'][1]]
 
     def atk_find_black_circle(self):
         '''
@@ -87,12 +216,12 @@ class Fight_master:
             area = cv2.contourArea(contour)
 
             # Проверка по радиусу, площади, цвету центра выделения (должен быть макс приближен к черному)
-            if ((limit_start_rad[0] < radius < limit_start_rad[1]) and
-                    (limit_start_area[0] < area < limit_start_area[1]) and
+            if ((LIMIT_START_RAD[0] < radius < LIMIT_START_RAD[1]) and
+                    (LIMIT_START_AREA[0] < area < LIMIT_START_AREA[1]) and
                     (self.gray_img[y][x] == 255) and
                     (sum([satur < 10 for satur in self.cropped_image[y][x]]) == 3)):
-                self.atk_circle_center = (x + params[self.stage]['limits_window']['x'][0],
-                                          y + params[self.stage]['limits_window']['y'][0])
+                self.atk_circle_center = (x + PARAMS[self.stage]['limits_window']['x'][0],
+                                          y + PARAMS[self.stage]['limits_window']['y'][0])
                 return
 
         self.error = 'Начало атк не найден'
@@ -111,7 +240,7 @@ class Fight_master:
             area = cv2.contourArea(contour)
 
             # Проверка по площади
-            if limit_arrow_area[0] < area < limit_arrow_area[1]:
+            if LIMIT_ARROW_AREA[0] < area < LIMIT_ARROW_AREA[1]:
                 approx_angle = cv2.approxPolyDP(contour, 0.01 * cv2.arcLength(contour, True), True)
 
                 # Проверка кол-ву углов, цвета центра выделения по изображению ргб и чб
@@ -124,8 +253,8 @@ class Fight_master:
                     if M["m00"] != 0:
                         cX = int(M["m10"] / M["m00"])
                         cY = int(M["m01"] / M["m00"])
-                        self.arrow_pos.append((cX + params[self.stage]['limits_window']['x'][0],
-                                               cY + params[self.stage]['limits_window']['y'][0]))
+                        self.arrow_pos.append((cX + PARAMS[self.stage]['limits_window']['x'][0],
+                                               cY + PARAMS[self.stage]['limits_window']['y'][0]))
         self.arrow_pos = np.array(self.arrow_pos)
         return
 
@@ -139,7 +268,8 @@ class Fight_master:
         lengths = calculate_distances(last_pos, self.arrow_pos)
 
         valid_indices = [i for i, l in enumerate(lengths) if i not in self.already_used_ind
-                         and limit_length_beetw_points[0] < l < limit_length_beetw_points[1]]
+                         and LIMIT_LENGTH_BEETW_POINTS[0] < l < LIMIT_LENGTH_BEETW_POINTS[1]]
+
         if valid_indices:
             closest_index = valid_indices[np.argmin(lengths[valid_indices])]
             self.already_used_ind.append(closest_index)
@@ -176,10 +306,10 @@ class Fight_master:
             x_new.extend([int(x[i] + dx * n) for n in range(num_points_between + 1)])
             y_new.extend([int(y[i] + dy * n) for n in range(num_points_between + 1)])
 
-            if ( x_new[-1] < params[self.stage]['limits_window']['x'][0] or
-                 x_new[-1] > params[self.stage]['limits_window']['x'][1] or
-                 y_new[-1] < params[self.stage]['limits_window']['y'][0] or
-                 y_new[-1] > params[self.stage]['limits_window']['y'][1]):
+            if ( x_new[-1] < PARAMS[self.stage]['limits_window']['x'][0] or
+                 x_new[-1] > PARAMS[self.stage]['limits_window']['x'][1] or
+                 y_new[-1] < PARAMS[self.stage]['limits_window']['y'][0] or
+                 y_new[-1] > PARAMS[self.stage]['limits_window']['y'][1]):
                 self.follow_points_interpol = list(zip(x_new, y_new))
                 return
 
@@ -197,11 +327,13 @@ class Fight_master:
         self.follow_points = [self.atk_circle_center]
         while self.atk_close_arrow_center():
             pass
+
         if len(self.follow_points) == 1:
             self.error = 'Путь атк не определен'
         else:
             self.atk_add_points()
         return
+
 
     def defence_find_contours_n_breaker(self):
         '''
@@ -233,27 +365,25 @@ class Fight_master:
                 u.append(min(points_y))
                 d.append(max(points_y))
 
-        l = min(l) + params['defence']['limits_window']['x'][0]
-        r = max(r) + params['defence']['limits_window']['x'][0]
-        u = min(u) + params['defence']['limits_window']['y'][0]
-        d = max(d) + params['defence']['limits_window']['y'][0]
+        l = min(l) + PARAMS['defence']['limits_window']['x'][0]
+        r = max(r) + PARAMS['defence']['limits_window']['x'][0]
+        u = min(u) + PARAMS['defence']['limits_window']['y'][0]
+        d = max(d) + PARAMS['defence']['limits_window']['y'][0]
 
-        self.def_center = ((l + r) // 2, (u + d) // 2)
+        self.def_center = ((l + r)//2, (u + d)//2)
 
         # Нахождение точки контрудара
         # определение ориентации участка для блока
-        if (r - l) < (d - u) * block_cor_coef:
+        if (r - l) < (d - u) * BLOCK_CORR_COEFF:
             # Вертикальная ориентация. Смещение по x
-            def_point_resist = (self.def_center[0] + block_height, self.def_center[1])
-            def_point_half = (self.def_center[0] + int(block_height / 2), self.def_center[1])
-            def_point_out = (self.def_center[0] - int(block_height / 2), self.def_center[1])
+            def_points_resist = [(self.def_center[0] + int(BLOCK_HEIGHT * (k / 10)), self.def_center[1]) for k in range(10,1,-1)]
+            def_point_out = (self.def_center[0] - int(BLOCK_HEIGHT * 0.5), self.def_center[1])
         else:
             # Горизонтальная ориентация. Смещение по y
-            def_point_resist = (self.def_center[0], self.def_center[1] - block_height)
-            def_point_half = (self.def_center[0], self.def_center[1] - int(block_height / 2))
-            def_point_out = (self.def_center[0], self.def_center[1] + int(block_height / 2))
+            def_points_resist = [(self.def_center[0], self.def_center[1] - int(BLOCK_HEIGHT * (k / 10))) for k in range(10,1,-1)]
+            def_point_out = (self.def_center[0], self.def_center[1] + int(BLOCK_HEIGHT * 0.5))
 
-        self.def_follow_points = [def_point_resist, def_point_half, self.def_center, def_point_out]
+        self.def_follow_points = [*def_points_resist, self.def_center, def_point_out]
 
         return
     
@@ -293,45 +423,45 @@ class Fight_master:
         # Сохранение оригинала при ошибке
         if self.error:
             print(self.error)
-            cv2_ext.imwrite(f"{dir_save}{self.dt_end_str}_{self.error}_orig.jpg", self.screen_orig)
+            cv2_ext.imwrite(f"{DIR_SAVE}{self.dt_end_str}_{self.error}_orig.jpg", self.screen)
         else:
-            print(f"Выполнено за {self.dt_end - self.dt_start:.3f} секунд")
+            print(f"Выполнено за {(self.dt_end - self.dt_start)*1000:.0f} мс")
         return
 
 def research_stages(fight_master):
     print('Функция сохранения этапов')
     # screen orig
-    cv2_ext.imwrite(f"{dir_save}{fight_master.dt_end_str}_0_orig.jpg", fight_master.screen_orig)
+    cv2_ext.imwrite(f"{DIR_SAVE}{fight_master.dt_end_str}_0_orig.jpg", fight_master.screen)
     # gray img
-    cv2_ext.imwrite(f"{dir_save}{fight_master.dt_end_str}_1_gray.jpg", fight_master.gray_img)
+    cv2_ext.imwrite(f"{DIR_SAVE}{fight_master.dt_end_str}_1_gray.jpg", fight_master.gray_img)
 
     if fight_master.stage == 'attack':
         print('# атака: вывод контуров начала удара')
-        screen = fight_master.screen_orig.copy()
+        screen = fight_master.screen.copy()
         for contour in fight_master.contours:
             (x, y), radius = cv2.minEnclosingCircle(contour)
             x, y = int(x), int(y)
             area = cv2.contourArea(contour)
             # Проверка
-            if ((limit_start_rad[0] < radius < limit_start_rad[1]) and
-                    (limit_start_area[0] < area < limit_start_area[1]) and
+            if ((LIMIT_START_RAD[0] < radius < LIMIT_START_RAD[1]) and
+                    (LIMIT_START_AREA[0] < area < LIMIT_START_AREA[1]) and
                     (fight_master.gray_img[y][x] == 255) and
                     (sum([satur < 10 for satur in fight_master.cropped_image[y][x]]) == 3)):
                 print((x, y), int(radius), int(area), fight_master.cropped_image[y][x], sep='\t')
-                cont = [[[point[0][0] + params['attack']['limits_window']['x'][0],
-                          point[0][1] + params['attack']['limits_window']['y'][0]
+                cont = [[[point[0][0] + PARAMS['attack']['limits_window']['x'][0],
+                          point[0][1] + PARAMS['attack']['limits_window']['y'][0]
                           ]] for point in contour]
                 cv2.drawContours(screen, np.array(cont), -1, (255, 0, 0), 3)
-        cv2_ext.imwrite(f"{dir_save}{fight_master.dt_end_str}_2_contours.jpg", screen)
+        cv2_ext.imwrite(f"{DIR_SAVE}{fight_master.dt_end_str}_2_contours.jpg", screen)
 
         print('# атака: вывод контуров стрелок и точек углов')
-        screen = fight_master.screen_orig.copy()
+        screen = fight_master.screen.copy()
         for contour in fight_master.contours:
             (x, y), radius = cv2.minEnclosingCircle(contour)
             x, y = int(x), int(y)
             area = cv2.contourArea(contour)
             # Проверка
-            if limit_arrow_area[0] < area < limit_arrow_area[1]:
+            if LIMIT_ARROW_AREA[0] < area < LIMIT_ARROW_AREA[1]:
                 approx_angle = cv2.approxPolyDP(contour, 0.01 * cv2.arcLength(contour, True), True)
 
                 if ((3 <= len(approx_angle) <= 12) and
@@ -339,35 +469,35 @@ def research_stages(fight_master):
                         (sum([(satur[0] < 10, satur[1] < 10, 170 < satur[2] < 195) for satur in [
                             fight_master.cropped_image[y][x]]][0]) == 3)):
                     print((x, y), int(radius), int(area), len(approx_angle), fight_master.cropped_image[y][x], sep='\t')
-                    cont = [[[point[0][0] + params['attack']['limits_window']['x'][0],
-                              point[0][1] + params['attack']['limits_window']['y'][0]
+                    cont = [[[point[0][0] + PARAMS['attack']['limits_window']['x'][0],
+                              point[0][1] + PARAMS['attack']['limits_window']['y'][0]
                               ]] for point in contour]
                     cv2.drawContours(screen, np.array(cont), -1, (255, 0, 0), 3)
 
                     for angle_point in approx_angle:
-                        cont = [(point[0] + params['attack']['limits_window']['x'][0],
-                                 point[1] + params['attack']['limits_window']['y'][0]
+                        cont = [(point[0] + PARAMS['attack']['limits_window']['x'][0],
+                                 point[1] + PARAMS['attack']['limits_window']['y'][0]
                                  ) for point in angle_point][0]
                         cv2.circle(screen, cont, 4, (0, 255, 0), thickness=2)
-        cv2_ext.imwrite(f"{dir_save}{fight_master.dt_end_str}_3_circles.jpg", screen)
+        cv2_ext.imwrite(f"{DIR_SAVE}{fight_master.dt_end_str}_3_circles.jpg", screen)
 
         if fight_master.follow_points_interpol:
             print('# атака: вывод точек траектории')
-            screen = fight_master.screen_orig.copy()
+            screen = fight_master.screen.copy()
             cv2.circle(screen, fight_master.follow_points_interpol[0], 10,(255, 0, 0), thickness=2)
             for point in fight_master.follow_points_interpol[1:]:
                 cv2.circle(screen, point, 10, (0, 255, 0), thickness=2)
             for point in fight_master.arrow_pos:
                 cv2.circle(screen, point, 10, (200, 200, 0), thickness=2)
-            cv2_ext.imwrite(f"{dir_save}{fight_master.dt_end_str}_4_points.jpg", screen)
+            cv2_ext.imwrite(f"{DIR_SAVE}{fight_master.dt_end_str}_4_points.jpg", screen)
 
     if fight_master.stage == 'defence':
-        screen = fight_master.screen_orig.copy()
+        screen = fight_master.screen.copy()
 
         print('# защита: вывод контуров')
         for contour in fight_master.def_contours:
-            cont = [[[point[0][0] + params['defence']['limits_window']['x'][0],
-                      point[0][1] + params['defence']['limits_window']['y'][0]
+            cont = [[[point[0][0] + PARAMS['defence']['limits_window']['x'][0],
+                      point[0][1] + PARAMS['defence']['limits_window']['y'][0]
                       ]] for point in contour]
             cv2.drawContours(screen, np.array(cont), -1, (255, 0, 0), 3)
 
@@ -375,7 +505,7 @@ def research_stages(fight_master):
         for point in fight_master.def_follow_points:
             cv2.circle(screen, point, 4, (0, 0, 255), thickness=2)
 
-        cv2_ext.imwrite(f"{dir_save}{fight_master.dt_end_str}_2_def.jpg", screen)
+        cv2_ext.imwrite(f"{DIR_SAVE}{fight_master.dt_end_str}_2_def.jpg", screen)
 
     print('###')
 
@@ -384,9 +514,9 @@ print('Битва начинается.')
 
 # Основной цикл
 while not keyboard.is_pressed('.') and not keyboard.is_pressed('/'):
-    # Показать где должен быть левый верхний угол окна игры
+    # показать где должен быть левый верхний угол окна игры
     if keyboard.is_pressed('1'):
-        pyautogui.moveTo((645,192))
+        pyautogui.moveTo((645, 192))
 
     #   /                   /
     #  /  Стадия 1. Атака  /
@@ -411,8 +541,8 @@ while not keyboard.is_pressed('.') and not keyboard.is_pressed('/'):
         fight_master.show_info_n_save_err_screen()
         time.sleep(0.1)
 
-    #   /                     /
-    #  /  Стадия сохранения  /
+    #   /                    /
+    #  /  Вызов сохранения  /
     # /                    /
     if keyboard.is_pressed('s'):
         research_stages(fight_master)
